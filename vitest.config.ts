@@ -17,13 +17,23 @@ function testDatabaseUrl(): string {
   return url.toString();
 }
 
+/**
+ * Tests use logical Redis database 1 so flushing between tests can never wipe a developer's
+ * dev-server sessions/caches (which live in database 0).
+ */
+function testRedisUrl(url: string): string {
+  const parsed = new URL(url);
+  parsed.pathname = '/1';
+  return parsed.toString();
+}
+
 const testEnv = {
   NODE_ENV: 'test',
   LOG_LEVEL: 'silent',
   PORT: '0',
   DATABASE_URL: testDatabaseUrl(),
-  REDIS_CACHE_URL: process.env['REDIS_CACHE_URL'] ?? 'redis://localhost:6379',
-  REDIS_COORD_URL: process.env['REDIS_COORD_URL'] ?? 'redis://localhost:6380',
+  REDIS_CACHE_URL: testRedisUrl(process.env['REDIS_CACHE_URL'] ?? 'redis://localhost:6379'),
+  REDIS_COORD_URL: testRedisUrl(process.env['REDIS_COORD_URL'] ?? 'redis://localhost:6380'),
   ALLOWED_ORIGIN: 'http://localhost:5173',
   COOKIE_SECURE: 'false',
   TRUST_PROXY: 'false',

@@ -8,7 +8,10 @@ import { config } from './platform/config.js';
 import { errorMiddleware, notFoundHandler } from './platform/errors.js';
 import { healthRouter } from './platform/health.js';
 import { logger } from './platform/logger.js';
+import { originCheck } from './platform/middleware/originCheck.js';
 import { requestId } from './platform/middleware/requestId.js';
+import { sessionMiddleware } from './platform/middleware/session.js';
+import { authRouter, sessionService } from './modules/auth/index.js';
 import { testRouter } from './platform/testSupport.js';
 
 /**
@@ -71,6 +74,11 @@ export function createApp(): Express {
 
   if (config.isTest) app.use(testRouter());
 
+  // 3. Origin check (CSRF defence), 5. session resolution. (4, the global rate limit, is added with Phase 7.)
+  app.use('/api', originCheck);
+  app.use('/api', sessionMiddleware((sid) => sessionService.resolve(sid)));
+
+  // 6-8. Route auth, route rate limit and the module routers.
   mountApi(app);
 
   // In production the app serves the SPA from SERVE_STATIC_DIR with an index.html fallback,
@@ -83,8 +91,9 @@ export function createApp(): Express {
 }
 
 /** Module routers. Each module exposes its router through its index (Section 3.3). */
-function mountApi(_app: Express): void {
-  // Filled in per phase: auth (1), flights (2/3), booking (3-6).
+function mountApi(app: Express): void {
+  app.use(authRouter());
+  // Added per phase: flights (2/3), booking (3-6).
 }
 
 function mountStatic(app: Express, dir: string): void {

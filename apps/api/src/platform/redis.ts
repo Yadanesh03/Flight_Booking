@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { Redis, type RedisOptions } from 'ioredis';
 import { config } from './config.js';
+import { AppError } from './errors.js';
 import { logger } from './logger.js';
 
 const log = logger.child({ module: 'platform' });
@@ -102,4 +103,17 @@ export async function closeRedis(): Promise<void> {
   await Promise.allSettled([cacheRedis.quit(), coordRedis.quit()]);
   cacheRedis.disconnect();
   coordRedis.disconnect();
+}
+
+/**
+ * Runs a redis-coord operation that a feature cannot work without (sessions, holds, ...). Any Redis
+ * failure becomes 503 SERVICE_DEGRADED: we refuse rather than act without coordination (invariant 9).
+ */
+export async function coordGuard<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof AppError) throw error;
+    throw new AppError('SERVICE_DEGRADED', { cause: error });
+  }
 }

@@ -10,7 +10,7 @@
     "start": "node dist/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "migrate": "tsx src/db/migrate.ts",
-    "migrate:generate": "drizzle-kit generate",
+    "migrate:generate": "drizzle-kit generate && node scripts/patch-migration-sql.mjs",
     "seed": "tsx src/seed/seed.ts"
   },
   "dependencies": {
