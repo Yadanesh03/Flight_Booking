@@ -36,6 +36,17 @@ export function resetTestCounters(): void {
   counters = emptyCounters();
 }
 
+/**
+ * Thrown by a test hook to simulate the process dying at that point (spec test 17). Booking code
+ * must NOT run failure handling for it: a crashed process cannot mark anything FAILED.
+ */
+export class SimulatedCrash extends Error {
+  constructor(message = 'simulated process crash') {
+    super(message);
+    this.name = 'SimulatedCrash';
+  }
+}
+
 export type TestHookName =
   /** Confirm transaction: right after `UPDATE flight_seats SET status='BOOKED'`. */
   | 'afterSeatUpdate'

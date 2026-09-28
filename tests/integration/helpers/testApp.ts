@@ -1,3 +1,4 @@
+import { createServer, type Server } from 'node:http';
 import type { Express } from 'express';
 import { sql } from 'drizzle-orm';
 import supertest from 'supertest';
@@ -36,7 +37,21 @@ export async function startTestApp(): Promise<Express> {
   return app;
 }
 
+/** One listening server per app: supertest would otherwise open an ephemeral one per parallel request. */
+const servers = new Map<Express, Server>();
+
+function serverFor(app: Express): Server {
+  let server = servers.get(app);
+  if (server === undefined) {
+    server = createServer(app).listen(0, '127.0.0.1');
+    servers.set(app, server);
+  }
+  return server;
+}
+
 export async function stopTestApp(): Promise<void> {
+  for (const server of servers.values()) await new Promise<void>((resolve) => server.close(() => resolve()));
+  servers.clear();
   clearTestHooks();
   await closeRedis();
   await closeDb();
@@ -71,7 +86,7 @@ export async function resetState(): Promise<void> {
  * going through /login (fixtures do this to skip bcrypt).
  */
 export function client(app: Express, origin: string | null = ORIGIN, sid?: string) {
-  const agent = supertest.agent(app);
+  const agent = supertest.agent(serverFor(app));
   const prepare = (test: supertest.Test, mutating: boolean): supertest.Test => {
     let prepared = test;
     if (mutating && origin !== null) prepared = prepared.set('Origin', origin);

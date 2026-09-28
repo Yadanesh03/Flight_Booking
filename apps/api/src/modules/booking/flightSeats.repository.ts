@@ -1,4 +1,4 @@
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import type { Executor } from '../../platform/db.js';
 import { countDbQuery } from '../../platform/testSupport.js';
 import { flightSeats, type FlightSeatRow, type NewFlightSeatRow } from './schema.js';
@@ -35,8 +35,31 @@ export const flightSeatsRepository = {
     return executor
       .select()
       .from(flightSeats)
-      .where(and(eq(flightSeats.flightId, flightId), sql`${flightSeats.id} IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`))
+      .where(and(eq(flightSeats.flightId, flightId), inArray(flightSeats.id, ids)))
       .orderBy(asc(flightSeats.id));
+  },
+
+  /**
+   * Phase C step 1: lock the requested seats for the rest of the transaction. ORDER BY id is a
+   * consistent lock order across all transactions, which is what prevents deadlocks between
+   * overlapping multi-seat bookings requested in opposite orders.
+   */
+  lockForUpdate(executor: Executor, flightId: number, ids: number[]): Promise<Array<{ id: number; status: 'AVAILABLE' | 'BOOKED' }>> {
+    return executor
+      .select({ id: flightSeats.id, status: flightSeats.status })
+      .from(flightSeats)
+      .where(and(eq(flightSeats.flightId, flightId), inArray(flightSeats.id, ids)))
+      .orderBy(asc(flightSeats.id))
+      .for('update');
+  },
+
+  /** AVAILABLE -> BOOKED for these seats. Returns the number of rows changed (must equal ids.length). */
+  async markBooked(executor: Executor, ids: number[], bookingId: number): Promise<number> {
+    const [result] = await executor
+      .update(flightSeats)
+      .set({ status: 'BOOKED', bookingId })
+      .where(and(inArray(flightSeats.id, ids), eq(flightSeats.status, 'AVAILABLE')));
+    return result.affectedRows;
   },
 
   /** `{ total, booked }` for the admin inventory view. */

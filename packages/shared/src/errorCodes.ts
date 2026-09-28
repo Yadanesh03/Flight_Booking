@@ -79,15 +79,20 @@ export interface ApiErrorBody {
  * Booking failure reasons persisted in `bookings.failure_reason` (an ErrorCode) so a replay can
  * return the same status/code as originally returned.
  */
-export type BookingFailureReason = Extract<
-  ErrorCode,
-  | 'HOLD_EXPIRED'
-  | 'SERVICE_DEGRADED'
-  | 'FLIGHT_NOT_BOOKABLE'
-  | 'VALIDATION_ERROR'
-  | 'PAYMENT_DECLINED'
-  | 'SEAT_UNAVAILABLE'
-  | 'BOOKING_ABANDONED'
-  | 'SERVICE_UNAVAILABLE'
-  | 'INTERNAL_ERROR'
->;
+export const BOOKING_FAILURE_REASONS = [
+  'HOLD_EXPIRED',
+  'SERVICE_DEGRADED',
+  'FLIGHT_NOT_BOOKABLE',
+  'VALIDATION_ERROR',
+  'PAYMENT_DECLINED',
+  'SEAT_UNAVAILABLE',
+  'BOOKING_ABANDONED',
+  'SERVICE_UNAVAILABLE',
+  'INTERNAL_ERROR'
+] as const satisfies readonly ErrorCode[];
+
+export type BookingFailureReason = (typeof BOOKING_FAILURE_REASONS)[number];
+
+export function isBookingFailureReason(value: unknown): value is BookingFailureReason {
+  return typeof value === 'string' && (BOOKING_FAILURE_REASONS as readonly string[]).includes(value);
+}

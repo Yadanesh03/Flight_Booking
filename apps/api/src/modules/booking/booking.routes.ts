@@ -6,5 +6,8 @@ import { bookingController } from './booking.controller.js';
 export function bookingRouter(): Router {
   const router = Router();
   router.get('/api/flights/:flightId/seats', requireAuth('optional'), bookingController.getSeatMap);
+  router.post('/api/bookings', requireAuth('session'), bookingController.createBooking);
+  router.get('/api/bookings', requireAuth('session'), bookingController.listBookings);
+  router.get('/api/bookings/:bookingRef', requireAuth('session'), bookingController.getBooking);
   return router;
 }

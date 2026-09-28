@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { Express } from 'express';
 import { sql } from 'drizzle-orm';
 import { BCRYPT_COST, type AdminFlightDto, type AircraftDto, type AirportDto, type UserDto } from '@flight/shared';
@@ -114,3 +115,87 @@ export async function scalar<T = number>(query: ReturnType<typeof sql>): Promise
   if (first === undefined) throw new Error('scalar(): no rows');
   return Object.values(first)[0];
 }
+
+// ---------------------------------------------------------------------------
+// Booking helpers
+// ---------------------------------------------------------------------------
+
+export interface TestSeat {
+  seatId: number;
+  seatNumber: string;
+  price: string;
+  cabinClass: string;
+  seatType: string;
+}
+
+export interface PublishedFlight {
+  flightId: number;
+  flightNumber: string;
+  aircraftId: number;
+  /** All seats in aircraft order (1A, 1B, 1C, 1D, ...). */
+  seats: TestSeat[];
+  seat(seatNumber: string): TestSeat;
+}
+
+/** Creates an aircraft + flight and publishes it. Defaults: 6 rows x 6 columns (36 seats), 1 business row. */
+export async function publishedFlight(
+  admin: TestClient,
+  options: Partial<FlightOptions> & { rows?: number; businessRows?: number; layoutColumns?: string; aircraftId?: number } = {}
+): Promise<PublishedFlight> {
+  const aircraftId =
+    options.aircraftId ??
+    (await createAircraft(admin, { totalRows: options.rows ?? 6, businessRows: options.businessRows ?? 1, layoutColumns: options.layoutColumns })).id;
+  const { rows: _rows, businessRows: _business, layoutColumns: _layout, aircraftId: _aircraft, ...flightOptions } = options;
+  const flight = await createFlight(admin, { ...flightOptions, aircraftId });
+  const published = await admin.post(`/api/admin/flights/${flight.flightId}/publish`);
+  if (published.status !== 200) throw new Error(`publish failed: ${published.status} ${JSON.stringify(published.body)}`);
+  const map = await admin.get(`/api/flights/${flight.flightId}/seats`);
+  const seats = (map.body.seats as TestSeat[]).map((s) => ({ seatId: s.seatId, seatNumber: s.seatNumber, price: s.price, cabinClass: s.cabinClass, seatType: s.seatType }));
+  return {
+    flightId: flight.flightId,
+    flightNumber: flight.flightNumber,
+    aircraftId,
+    seats,
+    seat(seatNumber: string): TestSeat {
+      const found = seats.find((candidate) => candidate.seatNumber === seatNumber);
+      if (found === undefined) throw new Error(`no seat ${seatNumber}`);
+      return found;
+    }
+  };
+}
+
+export interface PassengerInput {
+  seatId: number;
+  fullName?: string;
+  age?: number;
+}
+
+export function bookingBody(
+  flightId: number,
+  passengers: PassengerInput[],
+  payment: { method?: 'UPI' | 'CARD' | 'NETBANKING'; simulateOutcome?: 'SUCCESS' | 'DECLINED' } = {}
+): Record<string, unknown> {
+  return {
+    flightId,
+    seats: passengers.map((p, index) => ({
+      seatId: p.seatId,
+      passenger: { fullName: p.fullName ?? `Passenger ${index + 1}`, age: p.age ?? 30 + index }
+    })),
+    payment: { method: payment.method ?? 'UPI', ...(payment.simulateOutcome === undefined ? {} : { simulateOutcome: payment.simulateOutcome }) }
+  };
+}
+
+export const newKey = (): string => randomUUID();
+
+/** POST /api/bookings with an Idempotency-Key (a fresh one unless given). */
+export function book(http: TestClient, body: Record<string, unknown>, key: string = newKey()) {
+  return http.post('/api/bookings').set('Idempotency-Key', key).send(body);
+}
+
+let userCounter = 0;
+export async function newUser(app: Express, prefix = 'user'): Promise<{ http: TestClient; user: UserDto }> {
+  userCounter += 1;
+  return loginAs(app, { email: `${prefix}${userCounter}-${Date.now() % 100000}@example.com` });
+}
+
+export const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));

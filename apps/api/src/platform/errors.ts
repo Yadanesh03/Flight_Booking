@@ -8,6 +8,8 @@ export interface AppErrorOptions {
   details?: Record<string, unknown>;
   /** Seconds. Sets the `Retry-After` header. Always set for 429 and 409 BOOKING_IN_PROGRESS. */
   retryAfterSeconds?: number;
+  /** Extra response headers, e.g. `Idempotent-Replayed: true` on a replayed failure. */
+  headers?: Record<string, string>;
   cause?: unknown;
 }
 
@@ -17,6 +19,7 @@ export class AppError extends Error {
   readonly status: number;
   readonly details?: Record<string, unknown>;
   readonly retryAfterSeconds?: number;
+  readonly headers?: Record<string, string>;
 
   constructor(code: ErrorCode, options: AppErrorOptions = {}) {
     super(options.message ?? ERROR_MESSAGES[code], options.cause === undefined ? undefined : { cause: options.cause });
@@ -25,6 +28,7 @@ export class AppError extends Error {
     this.status = ERROR_STATUS[code];
     if (options.details !== undefined) this.details = options.details;
     if (options.retryAfterSeconds !== undefined) this.retryAfterSeconds = options.retryAfterSeconds;
+    if (options.headers !== undefined) this.headers = options.headers;
   }
 }
 
@@ -81,6 +85,12 @@ export function isDuplicateKey(error: unknown, indexName?: string): boolean {
   return false;
 }
 
+/** MySQL foreign-key violation on insert/update (parent row missing). */
+export function isForeignKeyViolation(error: unknown): boolean {
+  const code = findDbErrorCode(error);
+  return code === 'ER_NO_REFERENCED_ROW_2' || code === 'ER_NO_REFERENCED_ROW';
+}
+
 /** MySQL deadlock (1213) or lock-wait timeout (1205). */
 export function isRetryableTxError(error: unknown): boolean {
   const code = findDbErrorCode(error);
@@ -94,7 +104,12 @@ interface HttpishError {
 }
 
 /** Converts anything thrown into the public error model. No stack traces or internals leak. */
-export function toApiError(error: unknown): { status: number; body: ApiErrorBody['error']; retryAfterSeconds?: number } {
+export function toApiError(error: unknown): {
+  status: number;
+  body: ApiErrorBody['error'];
+  retryAfterSeconds?: number;
+  headers?: Record<string, string>;
+} {
   if (error instanceof AppError) {
     return {
       status: error.status,
@@ -103,7 +118,8 @@ export function toApiError(error: unknown): { status: number; body: ApiErrorBody
         message: error.message,
         ...(error.details === undefined ? {} : { details: error.details })
       },
-      ...(error.retryAfterSeconds === undefined ? {} : { retryAfterSeconds: error.retryAfterSeconds })
+      ...(error.retryAfterSeconds === undefined ? {} : { retryAfterSeconds: error.retryAfterSeconds }),
+      ...(error.headers === undefined ? {} : { headers: error.headers })
     };
   }
   if (error instanceof ZodError) {
@@ -153,9 +169,10 @@ export const errorMiddleware: ErrorRequestHandler = (error: unknown, req, res, n
     next(error);
     return;
   }
-  const { status, body, retryAfterSeconds } = toApiError(error);
+  const { status, body, retryAfterSeconds, headers } = toApiError(error);
   const log = req.log ?? logger;
   if (status >= 500) log.error({ err: error, code: body.code }, 'request failed');
+  if (headers !== undefined) for (const [name, value] of Object.entries(headers)) res.setHeader(name, value);
   if (retryAfterSeconds !== undefined) res.setHeader('Retry-After', String(Math.max(1, Math.ceil(retryAfterSeconds))));
   const payload: ApiErrorBody = { error: body, requestId: req.requestId };
   res.status(status).json(payload);
