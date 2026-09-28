@@ -1,9 +1,17 @@
 import type { RequestHandler } from 'express';
-import { bookingListQuerySchema, bookingRefSchema, bookingRequestSchema, idempotencyKeySchema } from '@flight/shared';
+import {
+  bookingListQuerySchema,
+  bookingRefSchema,
+  bookingRequestSchema,
+  holdsRequestSchema,
+  idempotencyKeySchema
+} from '@flight/shared';
+import { config } from '../../platform/config.js';
 import { AppError } from '../../platform/errors.js';
 import { requireUser } from '../../platform/requestContext.js';
 import { parseId } from '../../platform/validation.js';
 import { bookingService } from './booking.service.js';
+import { holdService } from './hold.service.js';
 import { seatMapService } from './seatMap.service.js';
 
 const getSeatMap: RequestHandler = async (req, res) => {
@@ -19,7 +27,9 @@ const createBooking: RequestHandler = async (req, res) => {
   const idempotencyKey = idempotencyKeySchema.parse(header.trim()).toLowerCase();
   const request = bookingRequestSchema.parse(req.body);
 
-  const { booking, replayed } = await bookingService.createBooking({ userId, idempotencyKey, request });
+  // Test-only escape hatch (spec test 2). The header is not even read outside NODE_ENV=test.
+  const skipHoldCheck = config.isTest && req.get('x-test-skip-holds') === '1';
+  const { booking, replayed } = await bookingService.createBooking({ userId, idempotencyKey, request, skipHoldCheck });
   if (replayed) res.setHeader('Idempotent-Replayed', 'true');
   res.status(replayed ? 200 : 201).json(booking);
 };
@@ -35,4 +45,27 @@ const getBooking: RequestHandler = async (req, res) => {
   res.json(await bookingService.getBooking(bookingRef, user));
 };
 
-export const bookingController = { getSeatMap, createBooking, listBookings, getBooking };
+/** PUT /api/flights/:flightId/holds  { seatIds }: replaces the user's held set on this flight. */
+const putHolds: RequestHandler = async (req, res) => {
+  const { id: userId } = requireUser(req);
+  const flightId = parseId(req.params['flightId'], 'flightId');
+  const { seatIds } = holdsRequestSchema.parse(req.body);
+  res.json(await holdService.acquire(userId, flightId, seatIds));
+};
+
+const deleteHolds: RequestHandler = async (req, res) => {
+  const { id: userId } = requireUser(req);
+  await holdService.release(userId, parseId(req.params['flightId'], 'flightId'));
+  res.status(204).end();
+};
+
+const listHolds: RequestHandler = async (req, res) => {
+  const { id: userId } = requireUser(req);
+  res.json(await holdService.list(userId));
+};
+
+const adminInventory: RequestHandler = async (req, res) => {
+  res.json(await seatMapService.getInventory(parseId(req.params['flightId'], 'flightId')));
+};
+
+export const bookingController = { getSeatMap, putHolds, deleteHolds, listHolds, createBooking, listBookings, getBooking, adminInventory };

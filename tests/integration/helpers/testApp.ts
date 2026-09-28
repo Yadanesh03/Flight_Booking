@@ -92,10 +92,18 @@ export async function resetState(): Promise<void> {
  * like a browser on the SPA's origin would. Pass `sid` to act as an already-logged-in user without
  * going through /login (fixtures do this to skip bcrypt).
  */
-export function client(app: Express, origin: string | null = ORIGIN, sid?: string) {
+let clientCounter = 0;
+
+/** A unique private address per client, e.g. 10.20.3.7, sent as X-Forwarded-For (the app runs with TRUST_PROXY in tests). */
+function nextClientIp(): string {
+  clientCounter += 1;
+  return `10.20.${(clientCounter >> 8) & 255}.${clientCounter & 255}`;
+}
+
+export function client(app: Express, origin: string | null = ORIGIN, sid?: string, ip: string = nextClientIp()) {
   const agent = supertest.agent(serverFor(app));
   const prepare = (test: supertest.Test, mutating: boolean): supertest.Test => {
-    let prepared = test;
+    let prepared = test.set('X-Forwarded-For', ip);
     if (mutating && origin !== null) prepared = prepared.set('Origin', origin);
     if (sid !== undefined) prepared = prepared.set('Cookie', `sid=${sid}`);
     return prepared;

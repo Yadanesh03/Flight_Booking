@@ -36,7 +36,9 @@ const testEnv = {
   REDIS_COORD_URL: testRedisUrl(process.env['REDIS_COORD_URL'] ?? 'redis://localhost:6380'),
   ALLOWED_ORIGIN: 'http://localhost:5173',
   COOKIE_SECURE: 'false',
-  TRUST_PROXY: 'false',
+  // Tests run "behind a proxy": every test client sends its own X-Forwarded-For address, so per-IP rate
+  // limits apply to each simulated client instead of to 127.0.0.1 as a whole.
+  TRUST_PROXY: 'true',
   HOLD_TTL_SECONDS: '3',
   PENDING_BOOKING_STALE_SECONDS: '2'
 };

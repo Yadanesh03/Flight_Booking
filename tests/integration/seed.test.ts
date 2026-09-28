@@ -1,6 +1,7 @@
 import type { Express } from 'express';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { seedDemoBookings } from '../../apps/api/src/seed/bookings.js';
 import { seedCatalog } from '../../apps/api/src/seed/catalog.js';
 import { db } from '../../apps/api/src/platform/db.js';
 import { client, resetState, startTestApp, stopTestApp } from './helpers/testApp.js';
@@ -137,5 +138,62 @@ describe('seedCatalog (Section 22)', () => {
     const result = await seedCatalog({ days: 1, demoUsers: false });
     expect(result.usersCreated).toBe(0);
     expect(await scalar(sql`SELECT COUNT(*) FROM users`)).toBe(0);
+  });
+});
+
+describe('seedDemoBookings (Section 22)', () => {
+  it('books ~5 % of the seats of near-term flights as demo users, through the real booking code', async () => {
+    await seedCatalog({ ...options, days: 2 });
+    const result = await seedDemoBookings({ days: 1 });
+    expect(result.flightsConsidered).toBeGreaterThan(5);
+    // Most touched flights got at least some bookings (a few may fall short if every demo user
+    // happened to be near their hourly hold quota when that flight's turn came).
+    expect(result.bookingsCreated).toBeGreaterThan(0);
+
+    // Real path: CONFIRMED bookings with a payment reference, passengers, snapshot and a booked seat each.
+    expect(await scalar(sql`SELECT COUNT(*) FROM bookings WHERE status <> 'CONFIRMED'`)).toBe(0);
+    expect(await scalar(sql`SELECT COUNT(*) FROM bookings WHERE payment_ref NOT LIKE 'SIMPAY-%' OR flight_snapshot IS NULL`)).toBe(0);
+    expect(await scalar(sql`SELECT COUNT(*) FROM bookings b JOIN users u ON u.id = b.user_id WHERE u.email NOT LIKE 'user_@example.com'`)).toBe(0);
+    expect(await scalar(sql`SELECT COUNT(*) FROM flight_seats WHERE status = 'BOOKED'`)).toBe(await scalar(sql`SELECT COUNT(*) FROM booking_seats`));
+
+    // Section 22 describes an AGGREGATE share ("~5% of seats... are booked"), not a per-flight
+    // guarantee: some flights may end up with none (e.g. if every demo user was near its hourly hold
+    // quota when that flight's turn came) while others get their full share.
+    const totals = (
+      await rows<{ booked: number; total: number }>(sql`SELECT SUM(status = 'BOOKED') AS booked, COUNT(*) AS total FROM flight_seats`)
+    )[0];
+    const overallShare = Number(totals.booked) / Number(totals.total);
+    expect(overallShare).toBeGreaterThan(0.01);
+    expect(overallShare).toBeLessThan(0.08);
+    const touchedFlights = await scalar(sql`SELECT COUNT(DISTINCT flight_id) FROM flight_seats WHERE status = 'BOOKED'`);
+    expect(touchedFlights).toBeGreaterThan(result.flightsConsidered / 3);
+
+    // Flights beyond the 1-day window are untouched.
+    expect(await scalar(sql`SELECT COUNT(*) FROM flight_seats fs JOIN flights f ON f.id = fs.flight_id
+                              WHERE fs.status = 'BOOKED' AND f.departure_time > NOW() + INTERVAL 1 DAY`)).toBe(0);
+    // No holds are left behind (the booking releases them).
+    expect(await scalar(sql`SELECT COUNT(*) FROM bookings`)).toBe(result.bookingsCreated);
+  }, 180_000);
+
+  it('is idempotent: running it again books nothing more', async () => {
+    // The first run pays for every booking it makes (a real, simulated 300-800 ms each); the second
+    // run should be fast, since finding nothing left to book costs one inventory read per flight.
+    await seedCatalog({ ...options, days: 1 });
+    await seedDemoBookings({ days: 1 });
+    const booked = await scalar(sql`SELECT COUNT(*) FROM booking_seats`);
+    const bookings = await scalar(sql`SELECT COUNT(*) FROM bookings`);
+    expect(bookings).toBeGreaterThan(0);
+
+    const startedSecondRun = Date.now();
+    const again = await seedDemoBookings({ days: 1 });
+    expect(again.bookingsCreated).toBe(0);
+    expect(Date.now() - startedSecondRun).toBeLessThan(45_000); // well under the cost of even one simulated payment retried per flight
+    expect(await scalar(sql`SELECT COUNT(*) FROM booking_seats`)).toBe(booked);
+    expect(await scalar(sql`SELECT COUNT(*) FROM bookings`)).toBe(bookings);
+  }, 240_000);
+
+  it('does nothing without demo users', async () => {
+    await seedCatalog({ days: 1, demoUsers: false });
+    expect(await seedDemoBookings({ days: 1 })).toEqual({ flightsConsidered: 0, bookingsCreated: 0, bookingsSkipped: 0 });
   });
 });

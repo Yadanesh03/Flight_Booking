@@ -190,9 +190,35 @@ export function bookingBody(
 
 export const newKey = (): string => randomUUID();
 
+/**
+ * How `book()` deals with seat holds:
+ *  - 'auto' (default): first try to hold the seats, IGNORING a failure, then book. Replays, invalid
+ *    bodies and already-booked seats therefore behave as if the user had simply clicked Pay, and a hold
+ *    that mattered but was refused surfaces as a failed booking assertion.
+ *  - 'none': just POST; the test acquired any holds itself.
+ *  - 'skip': the test-only server bypass of the hold check (spec test 2, "test helper bypassing holds");
+ *    the server honours it only when NODE_ENV=test.
+ */
+export type HoldMode = 'auto' | 'none' | 'skip';
+
 /** POST /api/bookings with an Idempotency-Key (a fresh one unless given). */
-export function book(http: TestClient, body: Record<string, unknown>, key: string = newKey()) {
-  return http.post('/api/bookings').set('Idempotency-Key', key).send(body);
+export async function book(http: TestClient, body: Record<string, unknown>, key: string = newKey(), options: { holds?: HoldMode } = {}) {
+  const mode = options.holds ?? 'auto';
+  if (mode === 'auto') {
+    const flightId = body['flightId'];
+    const seats = body['seats'];
+    if (typeof flightId === 'number' && Array.isArray(seats)) {
+      const seatIds = seats.map((seat: { seatId?: unknown }) => seat.seatId).filter((id): id is number => typeof id === 'number');
+      if (seatIds.length > 0) await http.put(`/api/flights/${flightId}/holds`).send({ seatIds });
+    }
+  }
+  const request = http.post('/api/bookings').set('Idempotency-Key', key);
+  return (mode === 'skip' ? request.set('X-Test-Skip-Holds', '1') : request).send(body);
+}
+
+/** PUT /api/flights/:id/holds. */
+export function holdSeats(http: TestClient, flightId: number, seatIds: number[]) {
+  return http.put(`/api/flights/${flightId}/holds`).send({ seatIds });
 }
 
 let userCounter = 0;

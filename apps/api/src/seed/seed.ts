@@ -3,6 +3,7 @@ import { closeDb } from '../platform/db.js';
 import { logger } from '../platform/logger.js';
 import { closeRedis, waitForRedis } from '../platform/redis.js';
 import { runMigrations } from '../db/migrate.js';
+import { seedDemoBookings } from './bookings.js';
 import { seedCatalog } from './catalog.js';
 
 const log = logger.child({ module: 'seed' });
@@ -21,7 +22,8 @@ async function main(): Promise<void> {
     adminEmail: config.seedAdminEmail,
     adminPassword: config.seedAdminPassword
   });
-  log.info({ catalog }, 'seed complete');
+  const bookings = config.isProduction ? undefined : await seedDemoBookings();
+  log.info({ catalog, bookings }, 'seed complete');
 }
 
 main()

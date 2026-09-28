@@ -20,6 +20,7 @@ import { sumMoney } from '../../platform/money.js';
 import { SimulatedCrash, runTestHook } from '../../platform/testSupport.js';
 import { flightsService, type FlightSnapshot } from '../flights/index.js';
 import { generateBookingRef } from './bookingRef.js';
+import { holdService } from './hold.service.js';
 import { bookingsRepository } from './bookings.repository.js';
 import { flightSeatsRepository } from './flightSeats.repository.js';
 import { simulatePayment } from './payment.simulator.js';
@@ -86,6 +87,11 @@ export interface CreateBookingParams {
   /** Lower-cased UUID v4 from the `Idempotency-Key` header. */
   idempotencyKey: string;
   request: BookingRequest;
+  /**
+   * TEST ONLY (spec test 2: "test helper bypassing holds"): skip the hold check so several users can
+   * race for the same seat in the confirm transaction. Ignored unless NODE_ENV=test.
+   */
+  skipHoldCheck?: boolean;
 }
 
 export interface CreateBookingResult {
@@ -312,6 +318,18 @@ async function updateSeatCache(flightId: number, seatIds: number[], bookingRef: 
   }
 }
 
+/** Releases exactly the booked seats' holds. Best effort: they expire by TTL anyway, and BOOKED wins on the seat map. */
+async function releaseHolds(userId: number, flightId: number, seatIds: number[], bookingRef: string): Promise<void> {
+  try {
+    await holdService.releaseBooked(userId, flightId, seatIds);
+  } catch (error) {
+    log.error(
+      { event: 'POST_COMMIT_CACHE_UPDATE_FAILED', step: 'holdRelease', flightId, bookingRef, err: error instanceof Error ? error.message : String(error) },
+      'POST_COMMIT_CACHE_UPDATE_FAILED'
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Public service
 // ---------------------------------------------------------------------------
@@ -321,11 +339,15 @@ async function runClaimedBooking(claimed: ClaimedBooking, params: CreateBookingP
   await runTestHook('afterClaim');
 
   // ---- Phase B: validate and pay. No DB locks are held while waiting on payment (invariant 10). ----
+  const seatIds = request.seats.map((seat) => seat.seatId).sort((a, b) => a - b);
+  // Step 5: the user must currently hold every seat; checked on the server at payment time (invariant 4).
+  // Expired/missing/foreign hold -> HOLD_EXPIRED (409); redis-coord unreachable -> SERVICE_DEGRADED (503).
+  if (!(config.isTest && params.skipHoldCheck === true)) await holdService.verifyHeld(userId, request.flightId, seatIds);
+
   const bookability = await flightsService.getBookability(request.flightId);
   if (!bookability.bookable || bookability.snapshot === null) throw new AppError('FLIGHT_NOT_BOOKABLE');
   const { status: _status, ...snapshot } = bookability.snapshot;
 
-  const seatIds = request.seats.map((seat) => seat.seatId).sort((a, b) => a - b);
   // The client never sends prices; they come from the immutable per-flight inventory.
   const seatRows = await flightSeatsRepository.listByIds(db, request.flightId, seatIds);
   if (seatRows.length !== seatIds.length) {
@@ -355,6 +377,7 @@ async function runClaimedBooking(claimed: ClaimedBooking, params: CreateBookingP
   });
   // Redis never marks a seat BOOKED before MySQL commits (invariant 7): this runs strictly after.
   await updateSeatCache(request.flightId, seatIds, claimed.bookingRef, 'commit');
+  await releaseHolds(userId, request.flightId, seatIds, claimed.bookingRef);
   // A success response is never produced unless COMMIT succeeded (invariant 2).
   log.info({ event: 'BOOKING_SUCCESS', userId, flightId: request.flightId, bookingRef: claimed.bookingRef, seats: seatIds.length }, 'BOOKING_SUCCESS');
 

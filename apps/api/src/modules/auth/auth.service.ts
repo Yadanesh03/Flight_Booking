@@ -72,6 +72,12 @@ export const authService = {
     }
   },
 
+  /** Looks a user up by (already lower-cased) email. Used by the seed script to find existing demo users. */
+  async findUserByEmail(email: string): Promise<UserDto | undefined> {
+    const row = await usersRepository.findByEmail(db, email.trim().toLowerCase());
+    return row === undefined ? undefined : toUserDto(row);
+  },
+
   /** POST /api/auth/register (Section 11.1). */
   async register(input: RegisterInput): Promise<AuthResult> {
     const user = await this.createUser({ name: input.name, email: input.email, password: input.password });

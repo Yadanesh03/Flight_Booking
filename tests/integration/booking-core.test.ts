@@ -201,7 +201,9 @@ describe('POST /api/bookings: flight and seat checks', () => {
     const { http } = await newUser(app);
     const key = newKey();
     const body = bookingBody(flight.flightId, [{ seatId: other.seat('2A').seatId }]);
-    const res = await book(http, body, key);
+    // Holds only ever cover a flight's own seats, so this defensive branch (Phase B step 7) is reachable
+    // only by bypassing the hold check.
+    const res = await book(http, body, key, { holds: 'skip' });
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
     expect(res.body.error.details.seatIds).toEqual([other.seat('2A').seatId]);
@@ -222,7 +224,9 @@ describe('POST /api/bookings: flight and seat checks', () => {
     const { http } = await newUser(app);
 
     for (const flight of [cancelled, cutoff]) {
-      const res = await book(http, bookingBody(flight.flightId, [{ seatId: flight.seat('2A').seatId }]));
+      // Bypass the hold check to exercise Phase B step 6 directly (holds.test.ts covers the real path:
+      // hold first, then the flight is cancelled).
+      const res = await book(http, bookingBody(flight.flightId, [{ seatId: flight.seat('2A').seatId }]), newKey(), { holds: 'skip' });
       expect(res.status, flight.flightNumber).toBe(409);
       expect(res.body.error.code).toBe('FLIGHT_NOT_BOOKABLE');
       expect(await seatStatus(flight.seat('2A').seatId)).toBe('AVAILABLE');
@@ -239,7 +243,8 @@ describe('POST /api/bookings: flight and seat checks', () => {
     expect((await book(first.http, bookingBody(flight.flightId, [{ seatId: seat.seatId }, { seatId: flight.seat('2B').seatId }]))).status).toBe(201);
 
     // Second user wants 2A (taken) and 2C (free): all-or-nothing.
-    const res = await book(second.http, bookingBody(flight.flightId, [{ seatId: seat.seatId }, { seatId: flight.seat('2C').seatId }]));
+    // (A hold on a booked seat is impossible, so bypass the hold check to reach the confirm transaction.)
+    const res = await book(second.http, bookingBody(flight.flightId, [{ seatId: seat.seatId }, { seatId: flight.seat('2C').seatId }]), newKey(), { holds: 'skip' });
     expect(res.status).toBe(409);
     expect(res.body.error.code).toBe('SEAT_UNAVAILABLE');
     expect(res.body.error.details.seatIds).toEqual([seat.seatId]);
@@ -327,7 +332,7 @@ describe('idempotency', () => {
     // Pause the first attempt right after its claim so the retry deterministically sees a PENDING row.
     const gate = createGate();
     setTestHook('afterClaim', gate.hook);
-    const first = book(http, body, key).then((r) => r);
+    const first = book(http, body, key, { holds: 'skip' }).then((r) => r);
     await gate.reached;
     const during = await book(http, body, key);
     expect(during.status).toBe(409);
@@ -350,7 +355,7 @@ describe('idempotency', () => {
 
     const gate = createGate();
     setTestHook('afterClaim', gate.hook);
-    const first = book(http, original, key).then((r) => r);
+    const first = book(http, original, key, { holds: 'skip' }).then((r) => r);
     await gate.reached; // the original is claimed and paused
     const during = await book(http, different, key);
     expect(during.status).toBe(422);
@@ -416,7 +421,7 @@ describe('concurrency and locking', () => {
     const seat = flight.seat('2A');
     const users = await Promise.all(Array.from({ length: 20 }, () => newUser(app)));
 
-    const responses = await Promise.all(users.map(({ http }) => book(http, bookingBody(flight.flightId, [{ seatId: seat.seatId }]))));
+    const responses = await Promise.all(users.map(({ http }) => book(http, bookingBody(flight.flightId, [{ seatId: seat.seatId }]), newKey(), { holds: 'skip' })));
 
     expect(responses.filter((r) => r.status === 201)).toHaveLength(1);
     const losers = responses.filter((r) => r.status !== 201);
@@ -439,8 +444,8 @@ describe('concurrency and locking', () => {
       const ids = ['A', 'B', 'C', 'D'].map((c) => flight.seat(`${row}${c}`).seatId);
       const [u1, u2] = [await newUser(app), await newUser(app)];
       const [r1, r2] = await Promise.all([
-        book(u1.http, bookingBody(flight.flightId, ids.map((seatId) => ({ seatId })))),
-        book(u2.http, bookingBody(flight.flightId, [...ids].reverse().map((seatId) => ({ seatId }))))
+        book(u1.http, bookingBody(flight.flightId, ids.map((seatId) => ({ seatId }))), newKey(), { holds: 'skip' }),
+        book(u2.http, bookingBody(flight.flightId, [...ids].reverse().map((seatId) => ({ seatId }))), newKey(), { holds: 'skip' })
       ]);
       const statuses = [r1.status, r2.status].sort();
       expect(statuses, `round ${round}: ${JSON.stringify([r1.body, r2.body])}`).toEqual([201, 409]);
@@ -462,7 +467,7 @@ describe('concurrency and locking', () => {
       ['4B', '4D', '4F']
     ];
     const users = await Promise.all(groups.map(() => newUser(app)));
-    const responses = await Promise.all(users.map(({ http }, i) => book(http, bookingBody(flight.flightId, groups[i].map(seat)))));
+    const responses = await Promise.all(users.map(({ http }, i) => book(http, bookingBody(flight.flightId, groups[i].map(seat)), newKey(), { holds: 'skip' })));
     for (const res of responses) expect([201, 409]).toContain(res.status);
     // No seat belongs to two bookings, and every booked seat belongs to exactly one CONFIRMED booking.
     expect(await scalar(sql`SELECT COUNT(*) FROM (SELECT flight_seat_id FROM booking_seats GROUP BY flight_seat_id HAVING COUNT(*) > 1) d`)).toBe(0);
@@ -547,7 +552,8 @@ describe('fault injection and recovery', () => {
     // machine cannot make the claim look fresh), and well before the original wakes up.
     setTestHook('afterClaim', () => sleep(4000));
 
-    const slow = book(http, body, key).then((r) => r);
+    // (Bypass holds: this test's timeline is longer than the 3 s test hold TTL.)
+    const slow = book(http, body, key, { holds: 'skip' }).then((r) => r);
     await sleep(2800);
     setTestHook('afterClaim', () => undefined);
     const replay = await book(http, body, key); // sees a stale PENDING and marks it abandoned

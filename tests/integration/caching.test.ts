@@ -10,9 +10,11 @@ import {
   book,
   bookingBody,
   createGate,
+  holdSeats,
   indiaDate,
   indiaTime,
   loginAdmin,
+  newKey,
   newUser,
   publishedFlight,
   scalar,
@@ -123,7 +125,10 @@ describe('spec test 13: a slow seat-status fill racing a booking commit', () => 
     const flight = await publishedFlight(admin);
     const seat = flight.seat('2A');
     const { http } = await newUser(app);
-    await cacheRedis.flushdb(); // cold cache (redis-coord is left alone: it holds the test users' sessions)
+    // Hold the seat FIRST: acquiring a hold reads the seat status through the same cache fill that the
+    // test is about to pause, so it must happen before the gate is installed.
+    expect((await holdSeats(http, flight.flightId, [seat.seatId])).status).toBe(200);
+    await cacheRedis.flushdb(); // cold cache (redis-coord is left alone: it holds sessions and the hold)
 
     // The fill reads the version and MySQL (seat still available), then pauses at a gate that only this
     // test opens: no sleeps, so the interleaving is identical on a fast or a loaded machine.
@@ -133,7 +138,7 @@ describe('spec test 13: a slow seat-status fill racing a booking commit', () => 
     await gate.reached;
 
     // While it is paused, a booking for that seat commits and bumps the version.
-    const booked = await book(http, bookingBody(flight.flightId, [{ seatId: seat.seatId }]));
+    const booked = await book(http, bookingBody(flight.flightId, [{ seatId: seat.seatId }]), newKey(), { holds: 'none' });
     expect(booked.status).toBe(201);
     expect(await cacheRedis.get(`bs:seatsver:${flight.flightId}`)).toBe('1');
 
