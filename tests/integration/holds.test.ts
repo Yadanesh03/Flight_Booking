@@ -547,6 +547,8 @@ describe('spec test 18: redis-coord down', () => {
       coordRedis.disconnect(); // redis-coord dies right after the claim, before the hold check
     });
     const res = await book(http, body, key, { holds: 'none' });
+    // `disconnect()` transitions to "end" asynchronously; `connect()` throws if called before that lands.
+    for (let i = 0; i < 100 && coordRedis.status !== 'end'; i += 1) await sleep(30);
     await coordRedis.connect();
     for (let i = 0; i < 100 && coordRedis.status !== 'ready'; i += 1) await sleep(30);
 
