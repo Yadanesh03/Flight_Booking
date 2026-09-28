@@ -128,10 +128,16 @@ export type TestClient = ReturnType<typeof client>;
  */
 export async function withRedisDown<T>(which: 'cache' | 'coord', fn: () => Promise<T>): Promise<T> {
   const target = which === 'cache' ? cacheRedis : coordRedis;
+  const waitForStatus = async (status: string): Promise<void> => {
+    for (let i = 0; i < 100 && target.status !== status; i += 1) await new Promise((resolve) => setTimeout(resolve, 30));
+    if (target.status !== status) throw new Error(`redis-${which} did not reach status "${status}" (still "${target.status}")`);
+  };
   const reconnect = async (): Promise<void> => {
+    // ioredis' `disconnect()` transitions to "end" asynchronously; `connect()` throws if called before
+    // that lands ("Redis is already connecting/connected").
+    await waitForStatus('end');
     await target.connect();
-    for (let i = 0; i < 100 && target.status !== 'ready'; i += 1) await new Promise((resolve) => setTimeout(resolve, 30));
-    if (target.status !== 'ready') throw new Error(`redis-${which} did not come back`);
+    await waitForStatus('ready');
   };
   target.disconnect();
   let result: T;
@@ -143,4 +149,15 @@ export async function withRedisDown<T>(which: 'cache' | 'coord', fn: () => Promi
   }
   await reconnect();
   return result;
+}
+
+/**
+ * Clears rate-limit counters (the `rl:*` keys in redis-coord). Tests that are about something else
+ * (idempotency, validation) but happen to make more requests than a route's per-minute limit allows
+ * use this between the unrelated bursts, so they don't have to also account for rate limiting, which
+ * has its own dedicated coverage in rate-limit.test.ts.
+ */
+export async function clearRateLimits(): Promise<void> {
+  const keys = await coordRedis.keys('rl:*');
+  if (keys.length > 0) await coordRedis.del(...keys);
 }

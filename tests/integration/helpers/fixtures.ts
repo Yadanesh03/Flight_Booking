@@ -30,14 +30,18 @@ let passwordHash: Promise<string> | undefined;
  * inserted with a bcrypt cost-12 hash computed once per test process and a session is minted
  * directly, so a test pays for no bcrypt work. The real register/login flow is covered in auth.test.ts.
  */
-export async function loginAs(app: Express, options: { email: string; name?: string; role?: 'USER' | 'ADMIN' }): Promise<{ http: TestClient; user: UserDto }> {
+export async function loginAs(
+  app: Express,
+  options: { email: string; name?: string; role?: 'USER' | 'ADMIN'; ip?: string }
+): Promise<{ http: TestClient; user: UserDto }> {
   passwordHash ??= bcrypt.hash(PASSWORD, BCRYPT_COST);
   const role = options.role ?? 'USER';
   const name = options.name ?? options.email.split('@')[0];
   await db.execute(sql`INSERT INTO users (name, email, password_hash, role) VALUES (${name}, ${options.email}, ${await passwordHash}, ${role})`);
   const id = await scalar<number>(sql`SELECT id FROM users WHERE email = ${options.email}`);
   const sid = await sessionService.create(id, role);
-  return { http: client(app, ORIGIN, sid), user: { id: Number(id), name, email: options.email, role } };
+  const http = options.ip === undefined ? client(app, ORIGIN, sid) : client(app, ORIGIN, sid, options.ip);
+  return { http, user: { id: Number(id), name, email: options.email, role } };
 }
 
 export const loginAdmin = (app: Express, email = 'admin@example.com') => loginAs(app, { email, role: 'ADMIN' });

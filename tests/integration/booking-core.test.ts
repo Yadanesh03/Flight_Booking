@@ -4,7 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { BOOKING_TX_MAX_RETRIES, BOOKING_REF_ALPHABET } from '@flight/shared';
 import { db } from '../../apps/api/src/platform/db.js';
 import { SimulatedCrash, getTestCounters, setTestHook } from '../../apps/api/src/platform/testSupport.js';
-import { client, resetState, startTestApp, stopTestApp, type TestClient } from './helpers/testApp.js';
+import { clearRateLimits, client, resetState, startTestApp, stopTestApp, type TestClient } from './helpers/testApp.js';
 import {
   book,
   bookingBody,
@@ -178,6 +178,7 @@ describe('POST /api/bookings: request validation', () => {
       ['missing payment', { flightId: flight.flightId, seats: ok['seats'] }]
     ];
     for (const [label, body] of bad) {
+      await clearRateLimits(); // this test is about validation, not the 10/min bookings rate limit
       const res = await book(http, body);
       expect(res.status, label).toBe(400);
       expect(res.body.error.code, label).toBe('VALIDATION_ERROR');
@@ -314,7 +315,10 @@ describe('idempotency', () => {
     expect(await scalar(sql`SELECT COUNT(*) FROM booking_seats`)).toBe(2);
     expect(getTestCounters().paymentCalls).toBe(1);
 
-    // After the winner finished, a retry returns the same booking (200 + replay header).
+    // After the winner finished, a retry returns the same booking (200 + replay header). The burst
+    // above already used this user's whole 10/min 'bookings' budget; clear it so this check is about
+    // idempotent replay, not rate limiting (which has its own coverage in rate-limit.test.ts).
+    await clearRateLimits();
     const retry = await book(http, body, key);
     expect(retry.status).toBe(200);
     expect(retry.headers['idempotent-replayed']).toBe('true');

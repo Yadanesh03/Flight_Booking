@@ -9,6 +9,7 @@ import { errorMiddleware, notFoundHandler } from './platform/errors.js';
 import { healthRouter } from './platform/health.js';
 import { logger } from './platform/logger.js';
 import { originCheck } from './platform/middleware/originCheck.js';
+import { rateLimit } from './platform/middleware/rateLimit.js';
 import { requestId } from './platform/middleware/requestId.js';
 import { sessionMiddleware } from './platform/middleware/session.js';
 import { authRouter, sessionService } from './modules/auth/index.js';
@@ -22,7 +23,7 @@ import { testRouter } from './platform/testSupport.js';
  * HTTP pipeline (Section 10.1):
  *   request ID -> helmet/body/logging -> origin check -> global rate limit -> session resolution
  *   -> route auth -> route rate limit -> module router -> error middleware
- * Steps after request logging are added per phase; module routers are mounted in `mountApi`.
+ * Module routers (with their own route-level auth and rate-limit rule) are mounted in `mountApi`.
  */
 export function createApp(): Express {
   const app = express();
@@ -76,8 +77,10 @@ export function createApp(): Express {
 
   if (config.isTest) app.use(testRouter());
 
-  // 3. Origin check (CSRF defence), 5. session resolution. (4, the global rate limit, is added with Phase 7.)
+  // 3. Origin check (CSRF defence). 4. Global rate limit, by IP (session resolution has not run yet).
   app.use('/api', originCheck);
+  app.use('/api', rateLimit('global'));
+  // 5. Session resolution.
   app.use('/api', sessionMiddleware((sid) => sessionService.resolve(sid)));
 
   // 6-8. Route auth, route rate limit and the module routers.
