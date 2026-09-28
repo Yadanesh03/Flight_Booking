@@ -67,18 +67,24 @@ export async function resetState(): Promise<void> {
 
 /**
  * A supertest agent with a cookie jar that sends the allowed Origin on state-changing requests,
- * like a browser on the SPA's origin would.
+ * like a browser on the SPA's origin would. Pass `sid` to act as an already-logged-in user without
+ * going through /login (fixtures do this to skip bcrypt).
  */
-export function client(app: Express, origin: string | null = ORIGIN) {
+export function client(app: Express, origin: string | null = ORIGIN, sid?: string) {
   const agent = supertest.agent(app);
-  const withOrigin = (test: supertest.Test): supertest.Test => (origin === null ? test : test.set('Origin', origin));
+  const prepare = (test: supertest.Test, mutating: boolean): supertest.Test => {
+    let prepared = test;
+    if (mutating && origin !== null) prepared = prepared.set('Origin', origin);
+    if (sid !== undefined) prepared = prepared.set('Cookie', `sid=${sid}`);
+    return prepared;
+  };
   return {
     agent,
-    get: (path: string) => agent.get(path),
-    post: (path: string) => withOrigin(agent.post(path)),
-    put: (path: string) => withOrigin(agent.put(path)),
-    patch: (path: string) => withOrigin(agent.patch(path)),
-    delete: (path: string) => withOrigin(agent.delete(path))
+    get: (path: string) => prepare(agent.get(path), false),
+    post: (path: string) => prepare(agent.post(path), true),
+    put: (path: string) => prepare(agent.put(path), true),
+    patch: (path: string) => prepare(agent.patch(path), true),
+    delete: (path: string) => prepare(agent.delete(path), true)
   };
 }
 
