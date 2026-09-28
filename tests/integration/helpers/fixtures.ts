@@ -6,6 +6,7 @@ import bcrypt from 'bcrypt';
 import { sessionService } from '../../../apps/api/src/modules/auth/index.js';
 import { catalogService } from '../../../apps/api/src/modules/flights/index.js';
 import { db } from '../../../apps/api/src/platform/db.js';
+import { cacheRedis, coordRedis } from '../../../apps/api/src/platform/redis.js';
 import { addDays, dateInZone, zonedMidnightUtc } from '../../../apps/api/src/platform/time.js';
 import { ORIGIN, client, type TestClient } from './testApp.js';
 
@@ -107,6 +108,8 @@ export async function createFlight(admin: TestClient, options: FlightOptions): P
 /** Test-only shortcut used before publish exists in a test's setup: flips a flight's status in SQL. */
 export async function forceStatus(flightId: number, status: 'DRAFT' | 'SCHEDULED' | 'CANCELLED'): Promise<void> {
   await db.execute(sql`UPDATE flights SET status = ${status} WHERE id = ${flightId}`);
+  // Bypassing the API also bypasses its cache invalidation, so do what a real admin write does.
+  await Promise.all([cacheRedis.del(`fs:flight:${flightId}`), coordRedis.incr('fs:searchver')]);
 }
 
 export async function scalar<T = number>(query: ReturnType<typeof sql>): Promise<T> {
@@ -199,3 +202,26 @@ export async function newUser(app: Express, prefix = 'user'): Promise<{ http: Te
 }
 
 export const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * A deterministic rendezvous for race tests, so ordering never depends on sleeps or machine speed.
+ * Install `gate.hook` as a test hook: the first caller signals `reached` and then blocks until the
+ * test calls `release()`. Later callers pass straight through.
+ */
+export function createGate(): { hook: () => Promise<void>; reached: Promise<void>; release: () => void } {
+  let markReached!: () => void;
+  let open!: () => void;
+  const reached = new Promise<void>((resolve) => (markReached = resolve));
+  const opened = new Promise<void>((resolve) => (open = resolve));
+  let used = false;
+  return {
+    reached,
+    release: () => open(),
+    hook: async () => {
+      if (used) return;
+      used = true;
+      markReached();
+      await opened;
+    }
+  };
+}

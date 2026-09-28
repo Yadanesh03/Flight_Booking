@@ -8,6 +8,7 @@ import { client, resetState, startTestApp, stopTestApp, type TestClient } from '
 import {
   book,
   bookingBody,
+  createGate,
   forceStatus,
   loginAdmin,
   newKey,
@@ -323,12 +324,16 @@ describe('idempotency', () => {
     const key = newKey();
     const body = bookingBody(flight.flightId, [{ seatId: flight.seat('2A').seatId }]);
 
+    // Pause the first attempt right after its claim so the retry deterministically sees a PENDING row.
+    const gate = createGate();
+    setTestHook('afterClaim', gate.hook);
     const first = book(http, body, key).then((r) => r);
-    await sleep(120); // the claim is in place; payment (300-800 ms) is still running
+    await gate.reached;
     const during = await book(http, body, key);
     expect(during.status).toBe(409);
     expect(during.body.error.code).toBe('BOOKING_IN_PROGRESS');
     expect(during.headers['retry-after']).toBe('2');
+    gate.release();
     const done = await first;
     expect(done.status).toBe(201);
     const after = await book(http, body, key);
@@ -343,11 +348,14 @@ describe('idempotency', () => {
     const original = bookingBody(flight.flightId, [{ seatId: flight.seat('2A').seatId }]);
     const different = bookingBody(flight.flightId, [{ seatId: flight.seat('2B').seatId }]);
 
+    const gate = createGate();
+    setTestHook('afterClaim', gate.hook);
     const first = book(http, original, key).then((r) => r);
-    await sleep(120);
+    await gate.reached; // the original is claimed and paused
     const during = await book(http, different, key);
     expect(during.status).toBe(422);
     expect(during.body.error.code).toBe('IDEMPOTENCY_KEY_REUSED');
+    gate.release();
     expect((await first).status).toBe(201);
 
     const after = await book(http, different, key);

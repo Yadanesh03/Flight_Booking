@@ -1,17 +1,20 @@
 import {
   BOOKING_CUTOFF_MINUTES,
+  CACHE_TTL_SECONDS,
   SEARCH_MAX_DAYS_AHEAD,
   type FlightDetailDto,
   type FlightSearchQuery,
   type FlightSummaryDto
 } from '@flight/shared';
+import { getOrFill } from '../../platform/cache/getOrFill.js';
 import { db } from '../../platform/db.js';
 import { AppError } from '../../platform/errors.js';
 import { addDays, dateInZone, zonedDayRangeUtc } from '../../platform/time.js';
 import { validationError } from '../../platform/validation.js';
 import { parseLayout } from './layout.js';
-import { airportsRepository, flightsRepository, type FlightDetailRows, type FlightWithAircraft } from './flights.repository.js';
-import { toAirportDto } from './catalog.service.js';
+import { catalogService, toAirportDto } from './catalog.service.js';
+import { flightKey, readSearchVersion, searchKey } from './flightCache.js';
+import { flightsRepository, type FlightDetailRows, type FlightWithAircraft } from './flights.repository.js';
 
 const MINUTE_MS = 60_000;
 
@@ -87,10 +90,10 @@ export const flightsService = {
    * cutoff are returned.
    */
   async search(query: FlightSearchQuery, now: Date = new Date()): Promise<FlightSummaryDto[]> {
-    const found = await airportsRepository.findByCodes(db, [query.from, query.to]);
-    const origin = found.find((airport) => airport.code === query.from);
+    const airports = await catalogService.listAirports(); // cached
+    const origin = airports.find((airport) => airport.code === query.from);
     if (origin === undefined) throw validationError('from', 'Unknown airport.');
-    if (!found.some((airport) => airport.code === query.to)) throw validationError('to', 'Unknown airport.');
+    if (!airports.some((airport) => airport.code === query.to)) throw validationError('to', 'Unknown airport.');
 
     const today = dateInZone(origin.timezone, now);
     if (query.date < today) throw validationError('date', 'The date cannot be in the past.');
@@ -98,23 +101,37 @@ export const flightsService = {
       throw validationError('date', `The date must be within ${SEARCH_MAX_DAYS_AHEAD} days from today.`);
     }
 
-    const { start, end } = zonedDayRangeUtc(query.date, origin.timezone);
-    const rows = await flightsRepository.search(db, {
-      from: query.from,
-      to: query.to,
-      rangeStart: start,
-      rangeEnd: end,
-      departAfter: new Date(now.getTime() + BOOKING_CUTOFF_MINUTES * MINUTE_MS),
-      sort: query.sort
-    });
-    return rows.map(toFlightSummary);
+    const load = async (): Promise<FlightSummaryDto[]> => {
+      const { start, end } = zonedDayRangeUtc(query.date, origin.timezone);
+      const rows = await flightsRepository.search(db, {
+        from: query.from,
+        to: query.to,
+        rangeStart: start,
+        rangeEnd: end,
+        departAfter: new Date(now.getTime() + BOOKING_CUTOFF_MINUTES * MINUTE_MS),
+        sort: query.sort
+      });
+      return rows.map(toFlightSummary);
+    };
+
+    // `fs:search:v<ver>:...` for 60 s. Admin flight writes bump `ver`, which orphans every cached
+    // search at once. Without a readable version (redis-coord down) the cache is bypassed.
+    const version = await readSearchVersion();
+    if (version === undefined) return load();
+    const key = searchKey(version, query.from, query.to, query.date, query.sort);
+    return (await getOrFill(key, CACHE_TTL_SECONDS.searchResults, load)) ?? [];
   },
 
   /** GET /api/flights/:id. DRAFT flights do not exist for non-admins. */
   async getFlight(flightId: number, isAdmin: boolean): Promise<FlightDetailDto> {
-    const rows = await flightsRepository.getDetail(db, flightId);
-    if (rows === undefined || (rows.flight.status === 'DRAFT' && !isAdmin)) throw new AppError('FLIGHT_NOT_FOUND');
-    return toFlightDetail(rows);
+    // `fs:flight:<id>` for 10 min, negative-cached (30 s) when missing; deleted on every admin write.
+    // The DRAFT check happens AFTER the cache so one cached copy serves admins and the public alike.
+    const flight = await getOrFill(flightKey(flightId), CACHE_TTL_SECONDS.flightDetails, async () => {
+      const rows = await flightsRepository.getDetail(db, flightId);
+      return rows === undefined ? null : toFlightDetail(rows);
+    });
+    if (flight === null || (flight.status === 'DRAFT' && !isAdmin)) throw new AppError('FLIGHT_NOT_FOUND');
+    return flight;
   },
 
   /**

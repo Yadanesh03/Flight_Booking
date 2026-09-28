@@ -1,7 +1,9 @@
-import type { AircraftCreateInput, AircraftDto, AirportDto } from '@flight/shared';
+import { CACHE_TTL_SECONDS, type AircraftCreateInput, type AircraftDto, type AirportDto } from '@flight/shared';
+import { getOrFill } from '../../platform/cache/getOrFill.js';
 import { db, withTransaction } from '../../platform/db.js';
 import { isDuplicateKey } from '../../platform/errors.js';
 import { validationError } from '../../platform/validation.js';
+import { AIRPORTS_KEY, invalidateAirports } from './flightCache.js';
 import { generateSeats } from './layout.js';
 import { aircraftRepository, airportsRepository } from './flights.repository.js';
 import type { AircraftRow, AirportRow } from './schema.js';
@@ -25,13 +27,18 @@ export function toAircraftDto(row: AircraftRow): AircraftDto {
 
 /** Airports and aircraft: reference data and its admin management. */
 export const catalogService = {
+  /** Cached in `fs:airports` for 24 h (reference data that only the seed script changes). */
   async listAirports(): Promise<AirportDto[]> {
-    return (await airportsRepository.listAll(db)).map(toAirportDto);
+    const airports = await getOrFill(AIRPORTS_KEY, CACHE_TTL_SECONDS.airports, async () =>
+      (await airportsRepository.listAll(db)).map(toAirportDto)
+    );
+    return airports ?? [];
   },
 
   /** Insert-if-missing reference data. Airports have no admin API; the seed script loads them. */
   async ensureAirports(list: AirportDto[]): Promise<void> {
     await airportsRepository.insertIgnore(db, list);
+    await invalidateAirports();
   },
 
   /**

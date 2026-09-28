@@ -11,6 +11,7 @@ import { moduleLogger } from '../../platform/logger.js';
 import { runTestHook } from '../../platform/testSupport.js';
 import { validationError } from '../../platform/validation.js';
 import { inventoryService } from '../booking/index.js';
+import { invalidateFlightCaches } from './flightCache.js';
 import { aircraftRepository, airportsRepository, flightsRepository, type FlightWithAircraft } from './flights.repository.js';
 import { toFlightSummary } from './flights.service.js';
 import { computeSeatPrice } from './pricing.js';
@@ -82,7 +83,9 @@ export const flightsAdminService = {
         basePrice: input.basePrice,
         status: 'DRAFT'
       });
-      return await loadAdminFlight(db, id);
+      const created = await loadAdminFlight(db, id);
+      await invalidateFlightCaches(id);
+      return created;
     } catch (error) {
       return rethrowDuplicateFlight(error);
     }
@@ -106,7 +109,7 @@ export const flightsAdminService = {
   /** PATCH /api/admin/flights/:id (DRAFT only, else 409 FLIGHT_NOT_EDITABLE). */
   async patchFlight(id: number, patch: FlightPatchInput): Promise<AdminFlightDto> {
     try {
-      return await withTransaction(async (tx) => {
+      const patched = await withTransaction(async (tx) => {
         // Row lock: a concurrent publish/cancel/delete of the same flight waits for this transaction.
         const existing = await flightsRepository.findByIdForUpdate(tx, id);
         if (existing === undefined) throw new AppError('FLIGHT_NOT_FOUND');
@@ -133,6 +136,8 @@ export const flightsAdminService = {
         });
         return await loadAdminFlight(tx, id);
       });
+      await invalidateFlightCaches(id);
+      return patched;
     } catch (error) {
       return rethrowDuplicateFlight(error);
     }
@@ -146,6 +151,7 @@ export const flightsAdminService = {
       if (existing.status !== 'DRAFT') throw new AppError('FLIGHT_NOT_EDITABLE');
       await flightsRepository.delete(tx, id);
     });
+    await invalidateFlightCaches(id);
   },
 
   /**
@@ -184,6 +190,7 @@ export const flightsAdminService = {
       await flightsRepository.setStatus(tx, id, 'SCHEDULED');
       return loadAdminFlight(tx, id);
     });
+    await invalidateFlightCaches(id);
     log.info({ event: 'FLIGHT_PUBLISHED', flightId: id }, 'FLIGHT_PUBLISHED');
     return dto;
   },
@@ -203,6 +210,7 @@ export const flightsAdminService = {
       await flightsRepository.setStatus(tx, id, 'CANCELLED');
       return loadAdminFlight(tx, id);
     });
+    await invalidateFlightCaches(id);
     log.info({ event: 'FLIGHT_CANCELLED', flightId: id }, 'FLIGHT_CANCELLED');
     return dto;
   }

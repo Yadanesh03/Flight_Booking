@@ -111,3 +111,28 @@ export function client(app: Express, origin: string | null = ORIGIN, sid?: strin
 }
 
 export type TestClient = ReturnType<typeof client>;
+
+/**
+ * Simulates one Redis instance going down for the duration of `fn`: the app's client is
+ * disconnected (no auto-reconnect), so every command fails immediately exactly as it would against a
+ * stopped server, then it is reconnected. (The tests share their Redis with a developer's dev
+ * server, so they cannot stop the real process.)
+ */
+export async function withRedisDown<T>(which: 'cache' | 'coord', fn: () => Promise<T>): Promise<T> {
+  const target = which === 'cache' ? cacheRedis : coordRedis;
+  const reconnect = async (): Promise<void> => {
+    await target.connect();
+    for (let i = 0; i < 100 && target.status !== 'ready'; i += 1) await new Promise((resolve) => setTimeout(resolve, 30));
+    if (target.status !== 'ready') throw new Error(`redis-${which} did not come back`);
+  };
+  target.disconnect();
+  let result: T;
+  try {
+    result = await fn();
+  } catch (error) {
+    await reconnect();
+    throw error;
+  }
+  await reconnect();
+  return result;
+}

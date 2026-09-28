@@ -23,6 +23,7 @@ import { generateBookingRef } from './bookingRef.js';
 import { bookingsRepository } from './bookings.repository.js';
 import { flightSeatsRepository } from './flightSeats.repository.js';
 import { simulatePayment } from './payment.simulator.js';
+import { seatCache } from './seatCache.js';
 import { requestHash } from './requestHash.js';
 import type { BookingRow, BookingSeatRow } from './schema.js';
 
@@ -95,7 +96,14 @@ export interface CreateBookingResult {
 
 /** Thrown inside the confirm transaction to roll it back when a seat is no longer available. */
 class SeatsUnavailable extends Error {
-  constructor(readonly seatIds: number[]) {
+  /**
+   * @param seatIds every requested seat that could not be booked
+   * @param bookedIds the subset MySQL reports as BOOKED (the seat-status cache is repaired for these)
+   */
+  constructor(
+    readonly seatIds: number[],
+    readonly bookedIds: number[]
+  ) {
     super('seats unavailable');
   }
 }
@@ -225,15 +233,13 @@ async function runConfirmTransaction(args: ConfirmArgs): Promise<void> {
       const locked = await flightSeatsRepository.lockForUpdate(tx, request.flightId, seatIds);
       await runTestHook('afterSeatLock');
       const lockedIds = new Set(locked.map((seat) => seat.id));
-      const notAvailable = [
-        ...locked.filter((seat) => seat.status !== 'AVAILABLE').map((seat) => seat.id),
-        ...seatIds.filter((id) => !lockedIds.has(id))
-      ];
-      if (notAvailable.length > 0) throw new SeatsUnavailable(notAvailable);
+      const booked = locked.filter((seat) => seat.status !== 'AVAILABLE').map((seat) => seat.id);
+      const notAvailable = [...booked, ...seatIds.filter((id) => !lockedIds.has(id))];
+      if (notAvailable.length > 0) throw new SeatsUnavailable(notAvailable, booked);
 
       // 2. Flip them. The status guard plus the affected-row count is a second check under the lock.
       const changed = await flightSeatsRepository.markBooked(tx, seatIds, claimed.bookingId);
-      if (changed !== seatIds.length) throw new SeatsUnavailable(seatIds);
+      if (changed !== seatIds.length) throw new SeatsUnavailable(seatIds, []);
       await runTestHook('afterSeatUpdate');
 
       // 3. Passengers (uq_booked_seat is the schema-level backstop against double booking).
@@ -272,6 +278,9 @@ async function confirmWithRetry(args: ConfirmArgs): Promise<void> {
       return;
     } catch (error) {
       if (error instanceof SeatsUnavailable) {
+        // MySQL says these seats are BOOKED but a cache (or a hold) let the request through: repair the
+        // seat-status cache so the seat map stops offering them.
+        await updateSeatCache(args.request.flightId, error.bookedIds, args.claimed.bookingRef, 'repair');
         throw new AppError('SEAT_UNAVAILABLE', { details: { seatIds: error.seatIds } });
       }
       if (!isRetryableTxError(error)) throw error;
@@ -280,6 +289,26 @@ async function confirmWithRetry(args: ConfirmArgs): Promise<void> {
       const backoff = BOOKING_TX_RETRY_BACKOFF_MS[Math.min(attempt, BOOKING_TX_RETRY_BACKOFF_MS.length - 1)] as number;
       await sleep(backoff + Math.floor(Math.random() * (BOOKING_TX_RETRY_JITTER_MS + 1)));
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Post-commit (best effort; never changes the response)
+// ---------------------------------------------------------------------------
+
+/**
+ * Marks seats booked in the seat-status cache (and bumps its version). MySQL is authoritative and
+ * has already committed, so a failure here only leaves the cache stale for at most the seat-status
+ * TTL (10 min), and the seat map shows BOOKED ahead of HELD anyway.
+ */
+async function updateSeatCache(flightId: number, seatIds: number[], bookingRef: string, purpose: 'commit' | 'repair'): Promise<void> {
+  try {
+    await seatCache.markBooked(flightId, seatIds);
+  } catch (error) {
+    log.error(
+      { event: 'POST_COMMIT_CACHE_UPDATE_FAILED', step: 'seatsMarkBooked', purpose, flightId, bookingRef, err: error instanceof Error ? error.message : String(error) },
+      'POST_COMMIT_CACHE_UPDATE_FAILED'
+    );
   }
 }
 
@@ -324,6 +353,8 @@ async function runClaimedBooking(claimed: ClaimedBooking, params: CreateBookingP
     paymentRef: payment.reference,
     snapshot
   });
+  // Redis never marks a seat BOOKED before MySQL commits (invariant 7): this runs strictly after.
+  await updateSeatCache(request.flightId, seatIds, claimed.bookingRef, 'commit');
   // A success response is never produced unless COMMIT succeeded (invariant 2).
   log.info({ event: 'BOOKING_SUCCESS', userId, flightId: request.flightId, bookingRef: claimed.bookingRef, seats: seatIds.length }, 'BOOKING_SUCCESS');
 
