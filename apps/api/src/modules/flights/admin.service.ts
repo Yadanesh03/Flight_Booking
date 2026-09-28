@@ -8,9 +8,12 @@ import {
 import { db, withTransaction, type Executor } from '../../platform/db.js';
 import { AppError, isDuplicateKey } from '../../platform/errors.js';
 import { moduleLogger } from '../../platform/logger.js';
+import { runTestHook } from '../../platform/testSupport.js';
 import { validationError } from '../../platform/validation.js';
+import { inventoryService } from '../booking/index.js';
 import { aircraftRepository, airportsRepository, flightsRepository, type FlightWithAircraft } from './flights.repository.js';
 import { toFlightSummary } from './flights.service.js';
+import { computeSeatPrice } from './pricing.js';
 
 const log = moduleLogger('flights');
 
@@ -63,7 +66,7 @@ async function loadAdminFlight(executor: Executor, id: number): Promise<AdminFli
   return toAdminFlight(rows);
 }
 
-/** Admin flight management (Section 13.2). Publish lives in publish.service.ts. */
+/** Admin flight management (Section 13.2, 13.3). */
 export const flightsAdminService = {
   /** POST /api/admin/flights -> DRAFT. */
   async createFlight(input: FlightCreateInput): Promise<AdminFlightDto> {
@@ -143,6 +146,46 @@ export const flightsAdminService = {
       if (existing.status !== 'DRAFT') throw new AppError('FLIGHT_NOT_EDITABLE');
       await flightsRepository.delete(tx, id);
     });
+  },
+
+  /**
+   * POST /api/admin/flights/:id/publish (Section 13.3), all in ONE transaction:
+   *   lock the flight row -> require DRAFT and a future departure -> price every seat of the aircraft
+   *   -> bulk-insert `flight_seats` (booking module, in this same transaction) -> mark SCHEDULED.
+   * Any failure rolls everything back: the flight stays DRAFT and no inventory exists, so a flight is
+   * never searchable without inventory (invariant 11).
+   */
+  async publishFlight(id: number, now: Date = new Date()): Promise<AdminFlightDto> {
+    const dto = await withTransaction(async (tx) => {
+      const flight = await flightsRepository.findByIdForUpdate(tx, id);
+      if (flight === undefined) throw new AppError('FLIGHT_NOT_FOUND');
+      if (flight.status !== 'DRAFT') throw new AppError('FLIGHT_NOT_EDITABLE');
+      if (flight.departureTime.getTime() <= now.getTime()) {
+        throw new AppError('FLIGHT_NOT_EDITABLE', { message: 'A flight that has already departed cannot be published.' });
+      }
+
+      const aircraftSeats = await aircraftRepository.listSeats(tx, flight.aircraftId);
+      if (aircraftSeats.length === 0) throw new Error(`aircraft ${flight.aircraftId} has no seats`);
+
+      await inventoryService.createInventory(
+        tx,
+        id,
+        aircraftSeats.map((seat) => ({
+          seatId: seat.id,
+          seatNumber: seat.seatNumber,
+          rowNo: seat.rowNo,
+          columnCode: seat.columnCode,
+          cabinClass: seat.cabinClass,
+          seatType: seat.seatType,
+          price: computeSeatPrice(flight.basePrice, seat.cabinClass, seat.seatType)
+        }))
+      );
+      await runTestHook('afterInventoryInsert');
+      await flightsRepository.setStatus(tx, id, 'SCHEDULED');
+      return loadAdminFlight(tx, id);
+    });
+    log.info({ event: 'FLIGHT_PUBLISHED', flightId: id }, 'FLIGHT_PUBLISHED');
+    return dto;
   },
 
   /**

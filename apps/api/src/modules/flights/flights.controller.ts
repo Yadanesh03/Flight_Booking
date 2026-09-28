@@ -59,6 +59,11 @@ const deleteFlight: RequestHandler = async (req, res) => {
   res.status(204).end();
 };
 
+const publishFlight: RequestHandler = async (req, res) => {
+  const id = parseId(req.params['id'], 'id');
+  res.json({ flight: await flightsAdminService.publishFlight(id) });
+};
+
 const cancelFlight: RequestHandler = async (req, res) => {
   const id = parseId(req.params['id'], 'id');
   res.json({ flight: await flightsAdminService.cancelFlight(id) });
@@ -74,5 +79,6 @@ export const flightsController = {
   listAdminFlights,
   patchFlight,
   deleteFlight,
+  publishFlight,
   cancelFlight
 };

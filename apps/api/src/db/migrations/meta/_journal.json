@@ -15,6 +15,20 @@
       "when": 1790614929194,
       "tag": "0001_flights",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1790615548905,
+      "tag": "0002_booking",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1790615567971,
+      "tag": "0003_cross_module_fks",
+      "breakpoints": true
     }
   ]
 }

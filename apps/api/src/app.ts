@@ -12,6 +12,7 @@ import { originCheck } from './platform/middleware/originCheck.js';
 import { requestId } from './platform/middleware/requestId.js';
 import { sessionMiddleware } from './platform/middleware/session.js';
 import { authRouter, sessionService } from './modules/auth/index.js';
+import { bookingRouter } from './modules/booking/index.js';
 import { flightsAdminRouter, flightsRouter } from './modules/flights/index.js';
 import { testRouter } from './platform/testSupport.js';
 
@@ -96,7 +97,7 @@ function mountApi(app: Express): void {
   app.use(authRouter());
   app.use(flightsRouter());
   app.use(flightsAdminRouter());
-  // Added per phase: booking (3-6).
+  app.use(bookingRouter());
 }
 
 function mountStatic(app: Express, dir: string): void {

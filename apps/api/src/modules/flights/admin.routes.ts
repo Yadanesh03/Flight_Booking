@@ -12,6 +12,7 @@ export function flightsAdminRouter(): Router {
   router.get('/api/admin/flights', admin, flightsController.listAdminFlights);
   router.patch('/api/admin/flights/:id', admin, flightsController.patchFlight);
   router.delete('/api/admin/flights/:id', admin, flightsController.deleteFlight);
+  router.post('/api/admin/flights/:id/publish', admin, flightsController.publishFlight);
   router.post('/api/admin/flights/:id/cancel', admin, flightsController.cancelFlight);
   return router;
 }
