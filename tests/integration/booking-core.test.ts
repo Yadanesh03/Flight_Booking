@@ -534,11 +534,13 @@ describe('fault injection and recovery', () => {
     const seat = flight.seat('2A').seatId;
     const key = newKey();
     const body = bookingBody(flight.flightId, [{ seatId: seat }]);
-    // The original request stalls for longer than the 2 s stale threshold right after its claim.
-    setTestHook('afterClaim', () => sleep(2500));
+    // The original request stalls, right after its claim, for much longer than the 2 s stale threshold;
+    // the replay comes in once the claim is comfortably stale (margins are generous so a slow or busy
+    // machine cannot make the claim look fresh), and well before the original wakes up.
+    setTestHook('afterClaim', () => sleep(4000));
 
     const slow = book(http, body, key).then((r) => r);
-    await sleep(2300);
+    await sleep(2800);
     setTestHook('afterClaim', () => undefined);
     const replay = await book(http, body, key); // sees a stale PENDING and marks it abandoned
     expect(replay.status).toBe(409);

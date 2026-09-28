@@ -33,19 +33,26 @@ export async function startTestApp(): Promise<Express> {
   const redis = await waitForRedis(5000);
   if (!redis.cache || !redis.coord) throw new Error(`Redis is not available: ${JSON.stringify(redis)}`);
   const app = createApp();
+  await listen(app);
   await resetState();
   return app;
 }
 
-/** One listening server per app: supertest would otherwise open an ephemeral one per parallel request. */
+/**
+ * One listening server per app, started (and awaited) up front: supertest would otherwise open an
+ * ephemeral server per parallel request, or race `listen()` and pile up listeners.
+ */
 const servers = new Map<Express, Server>();
 
+async function listen(app: Express): Promise<void> {
+  const server = createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  servers.set(app, server);
+}
+
 function serverFor(app: Express): Server {
-  let server = servers.get(app);
-  if (server === undefined) {
-    server = createServer(app).listen(0, '127.0.0.1');
-    servers.set(app, server);
-  }
+  const server = servers.get(app);
+  if (server === undefined) throw new Error('startTestApp() must be awaited before creating a client');
   return server;
 }
 
