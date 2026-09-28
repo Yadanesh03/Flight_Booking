@@ -1,0 +1,36 @@
+{
+  "name": "flight-booking",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build:shared": "npm run build -w @flight/shared",
+    "dev": "npm run build:shared && concurrently -k -n shared,api,web -c gray,cyan,magenta \"npm run dev -w @flight/shared\" \"npm run dev -w @flight/api\" \"npm run dev -w @flight/web\"",
+    "build": "npm run build:shared && npm run build -w @flight/api && npm run build -w @flight/web",
+    "typecheck": "npm run build:shared && npm run typecheck -w @flight/api && npm run typecheck -w @flight/web && tsc -p tests/tsconfig.json --noEmit",
+    "lint": "npm run build:shared && eslint .",
+    "test": "npm run build:shared && vitest run",
+    "test:unit": "npm run build:shared && vitest run --project unit",
+    "test:integration": "npm run build:shared && vitest run --project integration",
+    "test:load": "npm run build:shared && node --import tsx tests/load/run.ts",
+    "migrate": "npm run migrate -w @flight/api",
+    "seed": "npm run build:shared && npm run seed -w @flight/api"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@types/node": "^22.20.4",
+    "concurrently": "^9.2.4",
+    "eslint": "^9.39.5",
+    "tsx": "^4.23.15",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.70.1",
+    "vitest": "^3.2.7"
+  }
+}

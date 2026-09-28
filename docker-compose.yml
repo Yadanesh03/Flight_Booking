@@ -1,0 +1,95 @@
+# Local infrastructure (Architecture spec, Sections 7.2-7.4).
+#   Dev:  docker compose up -d                       -> MySQL + both Redis; run API/web on the host (npm run dev)
+#   App:  docker compose --profile app up --build    -> also runs the API container, which serves the built SPA
+# Credentials below are development-only defaults.
+name: flight-booking
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root_dev_password
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-time-zone=+00:00
+      - --transaction-isolation=REPEATABLE-READ
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./infra/mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  redis-cache:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./infra/redis/redis-cache.conf:/usr/local/etc/redis/redis.conf:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis-coord:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    ports:
+      - "6380:6380"
+    volumes:
+      - ./infra/redis/redis-coord.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis-coord-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6380", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "8080"
+      LOG_LEVEL: info
+      DATABASE_URL: mysql://app:app_dev_password@mysql:3306/flight_booking
+      REDIS_CACHE_URL: redis://redis-cache:6379
+      REDIS_COORD_URL: redis://redis-coord:6380
+      ALLOWED_ORIGIN: http://localhost:8080
+      # Plain-HTTP localhost demo. Set true behind TLS.
+      COOKIE_SECURE: "false"
+      TRUST_PROXY: "false"
+      SERVE_STATIC_DIR: /app/apps/web/dist
+    ports:
+      - "8080:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-coord:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+volumes:
+  mysql-data:
+  redis-coord-data:

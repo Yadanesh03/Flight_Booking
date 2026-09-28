@@ -1,0 +1,36 @@
+{
+  "name": "@flight/api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/main.js",
+  "scripts": {
+    "dev": "tsx watch --clear-screen=false src/main.ts",
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-assets.mjs",
+    "start": "node dist/main.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "migrate": "tsx src/db/migrate.ts",
+    "migrate:generate": "drizzle-kit generate",
+    "seed": "tsx src/seed/seed.ts"
+  },
+  "dependencies": {
+    "@flight/shared": "*",
+    "bcrypt": "^6.0.0",
+    "drizzle-orm": "^0.45.3",
+    "express": "^5.2.1",
+    "helmet": "^8.3.0",
+    "ioredis": "^5.11.1",
+    "mysql2": "^3.24.4",
+    "pino": "^9.14.0",
+    "pino-http": "^10.5.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/bcrypt": "^6.0.0",
+    "@types/express": "^5.0.6",
+    "@types/supertest": "^7.2.1",
+    "autocannon": "^8.0.0",
+    "drizzle-kit": "^0.31.11",
+    "supertest": "^7.3.0"
+  }
+}
